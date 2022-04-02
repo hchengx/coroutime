@@ -5,6 +5,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <strings.h>
 
 #define STACK_SIZE (64 * 1024)
 
@@ -37,37 +38,34 @@ struct co
 };
 
 static struct co* current = NULL;
-
 static struct co* list = NULL;
+static struct co* main_co = NULL;
 
 static inline void stack_switch_call(void* sp, void* entry, void* arg)
 {
-    __asm__ volatile(
-#if __x86_64__
-        "movq %%rcx, 0(%0); movq %0, %%rsp; movq %2, %%rdi; call *%1"
-        :
-        : "b"((uintptr_t)sp - 16), "d"((uintptr_t)entry), "a"((uintptr_t)arg)
-#else
-        "movl %%ecx, 4(%0); movl %0, %%esp; movl %2, 0(%0); call *%1"
-        :
-        : "b"((uintptr_t)sp - 8), "d"((uintptr_t)entry), "a"((uintptr_t)arg)
-#endif
-    );
-}
+    void* sp_ = NULL;
+    void* sp1_ = NULL;
+    void* sb_ = NULL;
+    void* sb1_ = NULL;
 
-static inline void restore_return()
-{
-    __asm__ volatile(
-#if __x86_64__
-        "movq 0(%%rsp), %%rcx"
-        :
-        :
-#else
-        "movl 4(%%esp), %%ecx"
-        :
-        :
-#endif
-    );
+    __asm__ volatile("movq %%rsp, %0\n\t"
+                     "movq %%rbp, %1"
+                     : "=r"(sp_), "=r"(sb_)
+                     :);
+
+    __asm__ volatile("movq %0, %%rsp\n\t"
+                     "movq %2, %%rdi\n\t"
+                     "callq *%1"
+                     :
+                     : "b"((uintptr_t)sp - 32), "d"((uintptr_t)entry),
+                       "a"((uintptr_t)arg));
+    __asm__ volatile("movq %0, %%rsp" : : "r"((uintptr_t)sp_));
+
+    __asm__ volatile("movq %%rsp, %0\n\t"
+                     "movq %%rbp, %1"
+                     : "=r"(sp1_), "=r"(sb1_)
+                     :);
+    assert(sp_ == sp1_ && sb_ == sb1_);
 }
 
 struct co* co_start(const char* name, void (*func)(void*), void* arg)
@@ -95,8 +93,11 @@ struct co* co_start(const char* name, void (*func)(void*), void* arg)
     return c;
 }
 
-static struct co* co_choose(struct co* current)
+static struct co* co_choose()
 {
+    assert(list != NULL);
+    if (current == main_co)
+        current = list->prev;
     struct co* temp = current->next;
     while (temp != current)
     {
@@ -104,7 +105,7 @@ static struct co* co_choose(struct co* current)
             break;
         temp = temp->next;
     }
-    return temp;
+    return temp == current ? main_co : temp;
 }
 
 void co_yield()
@@ -112,7 +113,7 @@ void co_yield()
     int status = setjmp(current->context);
     if (!status)
     {
-        current = co_choose(current);
+        current = co_choose();
         if (current->status == CO_RUNNING)
             longjmp(current->context, 1);
         else
@@ -120,7 +121,6 @@ void co_yield()
             ((struct co volatile*)current)->status = CO_RUNNING;
             stack_switch_call(current->stack + STACK_SIZE, current->func,
                               current->arg);
-            restore_return();
             current->status = CO_DEAD;
             co_yield();
         }
@@ -137,12 +137,16 @@ void co_wait(struct co* c)
 
 static __attribute__((constructor)) void co_constructor()
 {
-    current = co_start("main", NULL, NULL);
-    current->status = CO_RUNNING;
+    main_co = (struct co*)malloc(sizeof(struct co));
+    memset(main_co, 0, sizeof(struct co));
+    main_co->name = "main";
+    main_co->status = CO_RUNNING;
+    current = main_co;
 }
 
 static __attribute__((destructor)) void co_destructor()
 {
+    free(main_co);
     while (list && list->next != list)
     {
         struct co* next = list->next;
