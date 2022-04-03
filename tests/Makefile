@@ -6,8 +6,6 @@ test: libco all
 	@echo "==== TEST ===="
 	@LD_LIBRARY_PATH=.. ./libco-test
 
-libco-test: main.c
-
 libco:
 	@cd .. && make -s
 

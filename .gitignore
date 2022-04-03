@@ -1,3 +1,3 @@
-libco.so
+libco*
 *.o
 .vscode
