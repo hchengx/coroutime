@@ -41,33 +41,29 @@ static struct co* current = NULL;
 static struct co* list = NULL;
 static struct co* main_co = NULL;
 
+static inline void* co_wrapper(struct co* co)
+{
+    co->status = CO_RUNNING;
+
+    co->func(co->arg);
+    co->status = CO_DEAD;
+    co_yield();
+    return 0;
+}
+
 static inline void stack_switch_call(void* sp, void* entry, void* arg)
 {
-    void* sp_ = NULL;
-    void* sp1_ = NULL;
-    void* bp_ = NULL;
-    void* bp1_ = NULL;
-
-    __asm__ volatile("movq %%rsp, %0\n\t"
-                     "movq %%rbp, %1"
-                     : "=r"(sp_), "=r"(bp_)
-                     :);
-
-    __asm__ volatile("movq %0, %%rsp\n\t"
-                     "movq %2, %%rdi\n\t"
-                     "callq *%1"
-                     :
-                     : "b"((uintptr_t)sp), "d"((uintptr_t)entry),
-                       "a"((uintptr_t)arg));
-    __asm__ volatile("movq %0, %%rsp" : : "r"((uintptr_t)sp_));
-    __asm__ volatile("movq %0, %%rbp" : : "r"((uintptr_t)bp_));
-
-    __asm__ volatile("movq %%rsp, %0\n\t"
-                     "movq %%rbp, %1"
-                     : "=r"(sp1_), "=r"(bp1_)
-                     :);
-    assert(sp_ == sp1_);
-    assert(bp_ == bp1_);
+    asm volatile(
+#if __x86_64__
+        "movq %0, %%rsp; movq %2, %%rdi; jmp *%1"
+        :
+        : "b"((uintptr_t)sp - 8), "d"(entry), "a"(arg)
+#else
+        "movl %0, %%esp; movl %2, 4(%0); jmp *%1"
+        :
+        : "b"((uintptr_t)sp - 16), "d"(entry), "a"(arg)
+#endif
+    );
 }
 
 struct co* co_start(const char* name, void (*func)(void*), void* arg)
@@ -112,23 +108,20 @@ static struct co* co_choose()
 
 void co_yield()
 {
-    int status = setjmp(current->context);
+    int status = setjmp(current->context); // 保存上下文
     if (!status)
     {
         current = co_choose();
-        if (current->status == CO_RUNNING)
-            longjmp(current->context, 1);
-        else if (current->status == CO_NEW)
+        if (current->status == CO_NEW)
         {
             ((struct co volatile*)current)->status = CO_RUNNING;
-            stack_switch_call(current->stack + STACK_SIZE, current->func,
-                              current->arg);
-            current->status = CO_DEAD;
-            co_yield();
+            stack_switch_call(current->stack + STACK_SIZE, co_wrapper, current);
         }
+        longjmp(current->context, 1); // 切换上下文
     }
 }
 
+// 暂停当前协程，等待 co 完成
 void co_wait(struct co* c)
 {
     if (c->status != CO_DEAD)

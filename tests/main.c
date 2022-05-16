@@ -1,4 +1,5 @@
 #include "co-test.h"
+#include "co.h"
 #include <assert.h>
 #include <stdio.h>
 #include <stdlib.h>

@@ -6,6 +6,10 @@ test: libco all
 	@echo "==== TEST ===="
 	@LD_LIBRARY_PATH=.. ./libco-test
 
+debug: libco all
+	@LD_LIBRARY_PATH=.. gdb ./libco-test
+
+
 libco:
 	@cd .. && make -s
 
